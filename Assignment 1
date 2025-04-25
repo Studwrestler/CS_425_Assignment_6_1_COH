@@ -1,0 +1,150 @@
+#include <stdio.h>
+#include <cuda_runtime.h>
+
+#define BLOCK_SIZE 256
+
+
+__global__ void matrixVectorMul(int *matrix, int *vector, int *result, int rows, int cols) {
+    
+    int row = blockIdx.x;
+    
+    
+    if (row < rows) {
+        
+        int tid = threadIdx.x;
+        
+        
+        extern __shared__ int partial_sum[];
+        
+        
+        partial_sum[tid] = 0;
+        
+        for (int j = tid; j < cols; j += blockDim.x) {
+            partial_sum[tid] += matrix[row * cols + j] * vector[j];
+        }
+        
+        
+        __syncthreads();
+        
+        
+        for (int stride = blockDim.x / 2; stride > 0; stride >>= 1) {
+            if (tid < stride) {
+                partial_sum[tid] += partial_sum[tid + stride];
+            }
+            __syncthreads();
+        }
+        
+       
+        if (tid == 0) {
+            result[row] = partial_sum[0];
+        }
+    }
+}
+
+int main() {
+    
+    const int rows = 10;
+    const int cols = 10;
+    
+   
+    int h_matrix[rows][cols];
+    int h_vector[cols];
+    int h_result[rows];
+    
+    
+    printf("Vector V:\n");
+    for (int j = 0; j < cols; j++) {
+        h_vector[j] = j + 1;
+        printf("%d ", h_vector[j]);
+    }
+    printf("\n\n");
+    
+    
+    printf("Matrix M:\n");
+    for (int i = 0; i < rows; i++) {
+        for (int j = 0; j < cols; j++) {
+            h_matrix[i][j] = j + 1;
+            printf("%d ", h_matrix[i][j]);
+        }
+        printf("\n");
+    }
+    printf("\n");
+    
+    
+    int *d_matrix, *d_vector, *d_result;
+    cudaMalloc((void**)&d_matrix, rows * cols * sizeof(int));
+    cudaMalloc((void**)&d_vector, cols * sizeof(int));
+    cudaMalloc((void**)&d_result, rows * sizeof(int));
+    
+    
+    cudaMemcpy(d_matrix, h_matrix, rows * cols * sizeof(int), cudaMemcpyHostToDevice);
+    cudaMemcpy(d_vector, h_vector, cols * sizeof(int), cudaMemcpyHostToDevice);
+    
+   
+    int blockSize = 16;
+    int sharedMemSize = blockSize * sizeof(int);
+    
+    
+    matrixVectorMul<<<rows, blockSize, sharedMemSize>>>(d_matrix, d_vector, d_result, rows, cols);
+    
+    
+    cudaError_t cudaStatus = cudaGetLastError();
+    if (cudaStatus != cudaSuccess) {
+        fprintf(stderr, "Kernel launch failed: %s\n", cudaGetErrorString(cudaStatus));
+        return 1;
+    }
+    
+    
+    cudaDeviceSynchronize();
+    
+    
+    cudaMemcpy(h_result, d_result, rows * sizeof(int), cudaMemcpyDeviceToHost);
+    
+    
+    printf("Result vector R (M × V):\n");
+    for (int i = 0; i < rows; i++) {
+        printf("%d ", h_result[i]);
+    }
+    printf("\n\n");
+    
+    
+    printf("Verification of results:\n");
+    bool correct = true;
+    
+    for (int i = 0; i < rows; i++) {
+        
+        int expected = 0;
+        for (int j = 0; j < cols; j++) {
+            expected += h_matrix[i][j] * h_vector[j];
+        }
+        
+        if (h_result[i] != expected) {
+            printf("Error at position %d: Expected %d, got %d\n", i, expected, h_result[i]);
+            correct = false;
+        }
+    }
+    
+    if (correct) {
+        printf("All calculations are correct!\n");
+        printf("Each result element Ri = Σ(j=0 to 9) [(j+1)*(j+1)] = 385\n");
+        printf("This is because each row of M contains the same values [1,2,3,...,10],\n");
+        printf("and V also contains [1,2,3,...,10], giving us 1*1 + 2*2 + 3*3 + ... + 10*10 = 385\n");
+    } else {
+       
+        printf("\nDetailed calculation of expected result:\n");
+        int sum = 0;
+        for (int j = 0; j < cols; j++) {
+            int product = (j+1) * (j+1);
+            sum += product;
+            printf("(%d * %d) + ", j+1, j+1);
+        }
+        printf("\b\b= %d\n", sum);
+    }
+    
+    
+    cudaFree(d_matrix);
+    cudaFree(d_vector);
+    cudaFree(d_result);
+    
+    return 0;
+}
